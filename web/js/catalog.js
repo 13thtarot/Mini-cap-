@@ -30,3 +30,12 @@ export async function loadCatalog() {
     testMode: !!settings.test_mode,
   };
 }
+
+/** Gallery photos in display order. Customers only receive visible ones (RLS); the owner receives all. */
+export async function loadGallery() {
+  const rows = must(await sb.from("gallery_images").select("*").order("sort_order").order("id"));
+  return rows.map((r) => ({
+    id: r.id, title: r.title, focus: r.focus, active: r.active, path: r.storage_path,
+    url: r.storage_path ? sb.storage.from("salon-gallery").getPublicUrl(r.storage_path).data.publicUrl : `img/${r.default_key}.jpg`,
+  }));
+}

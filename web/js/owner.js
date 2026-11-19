@@ -82,3 +82,48 @@ export async function exportAll() {
   for (const t of tables) out[t] = await pageAll(() => sb.from(t).select("*"));
   return out;
 }
+
+/* ---------------------------------------------------------------- gallery photos (owner only) */
+const GBUCKET = "salon-gallery";
+/** Shrinks any photo to at most 1600px (JPEG) so uploads stay small and always fit the customer layout. */
+async function fitImage(file, max = 1600) {
+  if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type)) throw new Error("Please choose a JPG, PNG or WebP photo.");
+  const bmp = await createImageBitmap(file), k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Could not process that photo."))), "image/jpeg", 0.86));
+}
+async function putPhoto(file) {
+  const blob = await fitImage(file), path = `${newKey()}.jpg`;
+  const { error } = await sb.storage.from(GBUCKET).upload(path, blob, { contentType: "image/jpeg", cacheControl: "31536000" });
+  if (error) throw error;
+  return path;
+}
+const dropPhoto = (path) => (path ? sb.storage.from(GBUCKET).remove([path]).catch(() => {}) : null);
+
+export async function addGalleryPhoto(file, title, focus = "center") {
+  const path = await putPhoto(file);
+  try {
+    const last = must(await sb.from("gallery_images").select("sort_order").order("sort_order", { ascending: false }).limit(1));
+    return must(await sb.from("gallery_images").insert({ title: title.trim(), storage_path: path, focus, sort_order: (last[0]?.sort_order ?? 0) + 1 }).select().single());
+  } catch (e) { await dropPhoto(path); throw e; }
+}
+export async function replaceGalleryPhoto(id, file) {
+  const old = must(await sb.from("gallery_images").select("storage_path").eq("id", id).single()).storage_path, path = await putPhoto(file);
+  try { must(await sb.from("gallery_images").update({ storage_path: path }).eq("id", id)); } catch (e) { await dropPhoto(path); throw e; }
+  await dropPhoto(old);
+}
+export const updateGalleryItem = (id, patch) => sb.from("gallery_images").update(patch).eq("id", id).then(must);
+export async function moveGalleryItem(id, dir) {
+  const rows = must(await sb.from("gallery_images").select("id,sort_order").order("sort_order").order("id")),
+    i = rows.findIndex((r) => r.id === id), j = i + dir;
+  if (i < 0 || j < 0 || j >= rows.length) return;
+  [rows[i], rows[j]] = [rows[j], rows[i]];
+  await Promise.all(rows.map((r, n) => (r.sort_order !== n + 1 ? sb.from("gallery_images").update({ sort_order: n + 1 }).eq("id", r.id).then(must) : null)));
+}
+export async function deleteGalleryItem(id) {
+  const row = must(await sb.from("gallery_images").select("storage_path").eq("id", id).single());
+  must(await sb.from("gallery_images").delete().eq("id", id));
+  await dropPhoto(row.storage_path);
+}
